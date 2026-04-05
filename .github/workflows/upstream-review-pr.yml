@@ -55,7 +55,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $body = @"
+          BODY_FILE="$(mktemp)"
+          cat <<'EOF' > "$BODY_FILE"
           Scheduled upstream sync for review.
 
           Checklist before merge:
@@ -63,11 +64,11 @@ jobs:
           - Review auth, backup, crypto, and deployment changes
           - Wait for CI/security checks to complete
           - Ask Codex to review `upstream-review` against `main`
-          "@
+          EOF
 
-          $existing = gh pr list --head upstream-review --base main --state open --json number --jq ".[0].number"
-          if ($existing) {
-            gh pr edit $existing --title "Review upstream NodeWarden updates" --body $body
-          } else {
-            gh pr create --base main --head upstream-review --title "Review upstream NodeWarden updates" --body $body
-          }
+          EXISTING="$(gh pr list --head upstream-review --base main --state open --json number --jq '.[0].number')"
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --title "Review upstream NodeWarden updates" --body-file "$BODY_FILE"
+          else
+            gh pr create --base main --head upstream-review --title "Review upstream NodeWarden updates" --body-file "$BODY_FILE"
+          fi

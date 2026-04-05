@@ -65,6 +65,8 @@ jobs:
         if: steps.diffcheck.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
         run: |
           BODY_FILE="$(mktemp)"
           cat <<'EOF' > "$BODY_FILE"
@@ -77,12 +79,36 @@ jobs:
           - Ask Codex to review `upstream-review` against `main`
           EOF
 
-          EXISTING="$(gh pr list --head upstream-review --base main --state open --json number --jq '.[0].number')"
+          BODY_JSON="$(jq -Rs . < "$BODY_FILE")"
+
+          EXISTING="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:upstream-review&base=main" --jq '.[0].number')"
           if [ -n "$EXISTING" ]; then
-            gh pr edit "$EXISTING" --title "Review upstream NodeWarden updates" --body-file "$BODY_FILE"
-          else
-            gh pr create --base main --head upstream-review --title "Review upstream NodeWarden updates" --body-file "$BODY_FILE"
+            jq -n \
+              --arg title "Review upstream NodeWarden updates" \
+              --arg body "$(cat "$BODY_FILE")" \
+              '{title: $title, body: $body}' > pr-update.json
+            gh api "repos/$REPO/pulls/$EXISTING" --method PATCH --input pr-update.json > /dev/null
+            exit 0
           fi
+
+          for attempt in 1 2 3 4 5; do
+            jq -n \
+              --arg title "Review upstream NodeWarden updates" \
+              --arg head "$OWNER:upstream-review" \
+              --arg base "main" \
+              --arg body "$(cat "$BODY_FILE")" \
+              '{title: $title, head: $head, base: $base, body: $body, maintainer_can_modify: true}' > pr-create.json
+
+            if gh api "repos/$REPO/pulls" --method POST --input pr-create.json > /dev/null 2>&1; then
+              exit 0
+            fi
+
+            echo "PR creation attempt $attempt failed, retrying..."
+            sleep 5
+          done
+
+          echo "Failed to create PR after retries."
+          exit 1
 
       - name: No pending upstream changes
         if: steps.diffcheck.outputs.has_changes != 'true'

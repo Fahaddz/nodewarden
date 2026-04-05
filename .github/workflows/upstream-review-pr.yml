@@ -53,7 +53,7 @@ jobs:
 
       - name: Create or update PR
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           BODY_FILE="$(mktemp)"
           cat <<'EOF' > "$BODY_FILE"

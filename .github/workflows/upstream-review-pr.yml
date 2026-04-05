@@ -51,7 +51,18 @@ jobs:
         run: |
           git push --force-with-lease origin upstream-review
 
+      - name: Check whether review branch differs from main
+        id: diffcheck
+        run: |
+          COMMITS_AHEAD="$(git rev-list --right-only --count origin/main...upstream-review)"
+          if [ "$COMMITS_AHEAD" -gt 0 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create or update PR
+        if: steps.diffcheck.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.PR_BOT_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -72,3 +83,8 @@ jobs:
           else
             gh pr create --base main --head upstream-review --title "Review upstream NodeWarden updates" --body-file "$BODY_FILE"
           fi
+
+      - name: No pending upstream changes
+        if: steps.diffcheck.outputs.has_changes != 'true'
+        run: |
+          echo "No commits between main and upstream-review. Skipping PR creation."

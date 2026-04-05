@@ -77,6 +77,7 @@ jobs:
           - Review auth, backup, crypto, and deployment changes
           - Wait for CI/security checks to complete
           - Ask Codex to review `upstream-review` against `main`
+          - @codex
           EOF
 
           BODY_JSON="$(jq -Rs . < "$BODY_FILE")"

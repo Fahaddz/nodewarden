@@ -1,0 +1,125 @@
+name: AI PR Review
+
+on:
+  workflow_run:
+    workflows:
+      - Security Scan
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review manually
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ai-pr-review
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR context
+        id: context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PATH: ${{ github.event_path }}
+          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '' }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            PR_NUMBER="$(jq -r '.workflow_run.pull_requests[0].number // empty' "$EVENT_PATH")"
+            HEAD_BRANCH="$(jq -r '.workflow_run.head_branch // empty' "$EVENT_PATH")"
+            SECURITY_RUN_ID="$(jq -r '.workflow_run.id' "$EVENT_PATH")"
+            SECURITY_CONCLUSION="$(jq -r '.workflow_run.conclusion // "unknown"' "$EVENT_PATH")"
+            SECURITY_URL="$(jq -r '.workflow_run.html_url // empty' "$EVENT_PATH")"
+            SECURITY_NAME="$(jq -r '.workflow_run.name // "Security Scan"' "$EVENT_PATH")"
+            if [ -z "$PR_NUMBER" ] || [ "$HEAD_BRANCH" != "upstream-review" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            PR_NUMBER="$INPUT_PR_NUMBER"
+            SECURITY_RUN_ID=""
+            SECURITY_CONCLUSION="manual"
+            SECURITY_URL=""
+            SECURITY_NAME="manual"
+          fi
+
+          gh pr view "$PR_NUMBER" --json number,title,body,headRefName,baseRefName,url,changedFiles,commits,author,mergeable > pr.json
+
+          PR_HEAD="$(jq -r '.headRefName' pr.json)"
+          PR_BASE="$(jq -r '.baseRefName' pr.json)"
+          if [ "$PR_HEAD" != "upstream-review" ] || [ "$PR_BASE" != "main" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$SECURITY_RUN_ID" ]; then
+            gh api "repos/${{ github.repository }}/actions/runs/$SECURITY_RUN_ID/jobs?per_page=100" > security-jobs.json
+          else
+            printf '{"jobs":[]}\n' > security-jobs.json
+          fi
+
+          jq -n \
+            --arg conclusion "$SECURITY_CONCLUSION" \
+            --arg url "$SECURITY_URL" \
+            --arg name "$SECURITY_NAME" \
+            --argjson jobs "$(cat security-jobs.json)" \
+            '{
+              workflowName: $name,
+              conclusion: $conclusion,
+              url: $url,
+              jobs: ($jobs.jobs // [])
+            }' > security.json
+
+          gh pr diff "$PR_NUMBER" --patch > pr.diff
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Generate AI review
+        if: steps.context.outputs.skip != 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: gemini-3-flash-preview
+          PR_METADATA_PATH: pr.json
+          SECURITY_METADATA_PATH: security.json
+          DIFF_PATH: pr.diff
+          OUTPUT_PATH: ai-review.md
+          MAX_DIFF_CHARS: "300000"
+        run: |
+          node .github/scripts/ai-pr-review.cjs
+
+      - name: Create or update PR comment
+        if: steps.context.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          MARKER="<!-- ai-upstream-review -->"
+          jq -Rs --arg marker "$MARKER"$'\n' '{body: ($marker + .)}' ai-review.md > comment.json
+
+          COMMENT_ID="$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate | jq -r '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- ai-upstream-review -->"))) | .id' | tail -n 1)"
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" --method PATCH --input comment.json > /dev/null
+          else
+            gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --method POST --input comment.json > /dev/null
+          fi

@@ -11,9 +11,7 @@ on:
         default: main
 
 permissions:
-  contents: write
-  pull-requests: write
-  workflows: write
+  contents: read
 
 concurrency:
   group: upstream-review-pr
@@ -28,11 +26,18 @@ jobs:
         with:
           fetch-depth: 0
           ref: main
+          persist-credentials: false
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure bot token exists
+        env:
+          PUSH_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
+        run: |
+          test -n "$PUSH_TOKEN" || { echo "Missing secret: PR_BOT_TOKEN"; exit 1; }
 
       - name: Fetch upstream
         env:
@@ -49,7 +54,10 @@ jobs:
           git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"
 
       - name: Push review branch
+        env:
+          PUSH_TOKEN: ${{ secrets.PR_BOT_TOKEN }}
         run: |
+          git remote set-url origin "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git push --force-with-lease origin upstream-review
 
       - name: Check whether review branch differs from main
@@ -80,8 +88,6 @@ jobs:
           - Ask Codex to review `upstream-review` against `main`
           - @codex
           EOF
-
-          BODY_JSON="$(jq -Rs . < "$BODY_FILE")"
 
           EXISTING="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:upstream-review&base=main" --jq '.[0].number')"
           if [ -n "$EXISTING" ]; then

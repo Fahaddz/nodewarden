@@ -122,9 +122,11 @@ export function loadProfileSnapshot(email?: string | null): Profile | null {
     const raw = localStorage.getItem(PROFILE_SNAPSHOT_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Profile;
-    if (!parsed?.email || !parsed?.key) return null;
+    if (!parsed?.email) return null;
     if (email && parsed.email !== email) return null;
-    return parsed;
+    const snapshot = stripProfileSecrets(parsed);
+    localStorage.setItem(PROFILE_SNAPSHOT_KEY, JSON.stringify(snapshot));
+    return snapshot;
   } catch {
     return null;
   }
@@ -132,11 +134,25 @@ export function loadProfileSnapshot(email?: string | null): Profile | null {
 
 export function saveProfileSnapshot(profile: Profile | null): void {
   if (!profile) return;
-  localStorage.setItem(PROFILE_SNAPSHOT_KEY, JSON.stringify(profile));
+  localStorage.setItem(PROFILE_SNAPSHOT_KEY, JSON.stringify(stripProfileSecrets(profile)));
 }
 
 export function clearProfileSnapshot(): void {
   localStorage.removeItem(PROFILE_SNAPSHOT_KEY);
+}
+
+export function stripProfileSecrets(profile: Profile | null): Profile | null {
+  if (!profile) return null;
+  return {
+    id: String(profile.id || ''),
+    email: String(profile.email || ''),
+    name: String(profile.name || ''),
+    role: profile.role === 'admin' ? 'admin' : 'user',
+    masterPasswordHint: profile.masterPasswordHint ?? null,
+    publicKey: profile.publicKey ?? null,
+    key: '',
+    privateKey: null,
+  };
 }
 
 export function getCurrentDeviceIdentifier(): string {
@@ -593,4 +609,32 @@ export async function updateAuthorizedDeviceName(
 export async function deleteAllAuthorizedDevices(authedFetch: AuthedFetch): Promise<void> {
   const resp = await authedFetch('/api/devices', { method: 'DELETE' });
   if (!resp.ok) throw new Error(t('txt_remove_all_devices_failed'));
+}
+
+export async function getApiKey(authedFetch: AuthedFetch, masterPasswordHash: string): Promise<string> {
+  const resp = await authedFetch('/api/accounts/api-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ masterPasswordHash }),
+  });
+  if (!resp.ok) {
+    const body = await parseJson<TokenError>(resp);
+    throw new Error(body?.error_description || body?.error || 'Failed to get API key');
+  }
+  const body = (await parseJson<{ apiKey?: string }>(resp)) || {};
+  return String(body.apiKey || '');
+}
+
+export async function rotateApiKey(authedFetch: AuthedFetch, masterPasswordHash: string): Promise<string> {
+  const resp = await authedFetch('/api/accounts/rotate-api-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ masterPasswordHash }),
+  });
+  if (!resp.ok) {
+    const body = await parseJson<TokenError>(resp);
+    throw new Error(body?.error_description || body?.error || 'Failed to rotate API key');
+  }
+  const body = (await parseJson<{ apiKey?: string }>(resp)) || {};
+  return String(body.apiKey || '');
 }

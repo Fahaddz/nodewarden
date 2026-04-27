@@ -50,6 +50,7 @@ export interface User {
   verifyDevices?: boolean;
   totpSecret: string | null;
   totpRecoveryCode: string | null;
+  apiKey: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -449,6 +450,7 @@ export interface FolderResponse {
   id: string;
   name: string;
   revisionDate: string;
+  creationDate: string;
   object: string;
 }
 

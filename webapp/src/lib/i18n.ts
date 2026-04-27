@@ -309,6 +309,7 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_bulk_delete_sends_failed: "Bulk delete sends failed",
     txt_bulk_move_failed: "Bulk move failed",
     txt_cancel: "Cancel",
+    txt_continue: "Continue",
     txt_card: "Card",
     txt_card_details: "Card Details",
     txt_cardholder_name: "Cardholder Name",
@@ -417,6 +418,7 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_encrypted_file_2: "Encrypted file",
     txt_enter_a_folder_name: "Enter a folder name.",
     txt_enter_master_password_to_disable_two_step_verification: "Enter master password to disable two-step verification.",
+    txt_enter_master_password_to_continue: "Enter your master password to continue.",
     txt_enter_master_password_to_view_this_item: "Enter master password to view this item.",
     txt_expiration_date: "Expiration Date",
     txt_expiration_days_0_never: "Expiration Days (0 = never)",
@@ -598,9 +600,25 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_recover_two_step_login: "Recover Two-step Login",
     txt_recovered_but_auto_login_failed_please_sign_in: "Recovered but auto-login failed, please sign in.",
     txt_recovery_code: "Recovery Code",
+    txt_recovery_code_and_api_key: "Recovery Code and API Key",
     txt_recovery_code_copied: "Recovery code copied",
     txt_recovery_code_is_empty: "Recovery code is empty",
     txt_recovery_code_loaded: "Recovery code loaded",
+    txt_api_key: "API Key",
+    txt_view_api_key: "View API Key",
+    txt_rotate_api_key: "Rotate API Key",
+    txt_api_key_copied: "API key copied",
+    txt_api_key_loaded: "API key loaded",
+    txt_api_key_rotated: "API key rotated",
+    txt_rotate_api_key_confirm: "Rotate API key? The current key will stop working immediately.",
+    txt_api_key_is_empty: "API key is empty",
+    txt_api_key_dialog_intro: "Your API key can be used to authenticate with the Bitwarden CLI.",
+    txt_api_key_warning_body: "Your API key is an alternative authentication mechanism. Keep it secret.",
+    txt_oauth_client_credentials: "OAuth 2.0 Client Credentials",
+    txt_client_id: "client_id",
+    txt_client_secret: "client_secret",
+    txt_scope: "scope",
+    txt_grant_type: "grant_type",
     txt_refresh: "Refresh",
     txt_refresh_in_seconds_s: "Refresh in {seconds}s",
     txt_regenerate: "Regenerate",
@@ -635,6 +653,7 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_clear_search: "Clear search",
     txt_clear_search_esc: "Clear search (Esc)",
     txt_sort: "Sort",
+    txt_sort_manual: "Custom",
     txt_sort_last_edited: "Modified",
     txt_sort_created: "Created",
     txt_sort_name: "A-Z",
@@ -1026,6 +1045,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_confirm_master_password: '确认主密码',
   txt_submit: '提交',
   txt_cancel: '取消',
+  txt_continue: '继续',
   txt_yes: '是',
   txt_no: '否',
   txt_loading: '加载中...',
@@ -1293,6 +1313,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_encrypted_file_2: '加密文件',
   txt_enter_a_folder_name: '请输入文件夹名称',
   txt_enter_master_password_to_disable_two_step_verification: '输入主密码以禁用两步验证',
+  txt_enter_master_password_to_continue: '输入主密码以继续',
   txt_enter_master_password_to_view_this_item: '输入主密码以查看此项目',
   txt_expiry: '有效期',
   txt_expiry_month: '有效期月',
@@ -1361,8 +1382,24 @@ const zhCNOverrides: Record<string, string> = {
   txt_recover_2fa_failed: '恢复 2FA 失败',
   txt_recovered_but_auto_login_failed_please_sign_in: '已恢复，但自动登录失败，请手动登录',
   txt_recovery_code_copied: '恢复代码已复制',
+  txt_recovery_code_and_api_key: '恢复代码和 API 密钥',
   txt_recovery_code_is_empty: '恢复代码为空',
   txt_recovery_code_loaded: '恢复代码已加载',
+  txt_api_key: 'API 密钥',
+  txt_view_api_key: '查看 API 密钥',
+  txt_rotate_api_key: '轮换 API 密钥',
+  txt_api_key_copied: 'API 密钥已复制',
+  txt_api_key_loaded: 'API 密钥已加载',
+  txt_api_key_rotated: 'API 密钥已轮换',
+  txt_rotate_api_key_confirm: '轮换 API 密钥？当前密钥将立即失效。',
+  txt_api_key_is_empty: 'API 密钥为空',
+  txt_api_key_dialog_intro: '您的 API 密钥可用于在 Bitwarden CLI 中进行身份验证。',
+  txt_api_key_warning_body: '您的 API 密钥是一种替代身份验证机制。请严格保密。',
+  txt_oauth_client_credentials: 'OAuth 2.0 客户端凭据',
+  txt_client_id: 'client_id',
+  txt_client_secret: 'client_secret',
+  txt_scope: 'scope',
+  txt_grant_type: 'grant_type',
   txt_refresh_in_seconds_s: '{seconds} 秒后刷新',
   txt_registration_succeeded_please_sign_in: '注册成功，请登录',
   txt_remove_device: '移除设备',
@@ -1376,6 +1413,7 @@ const zhCNOverrides: Record<string, string> = {
   txt_security_code: '安全码',
   txt_security_code_cvv: '安全码 (CVV)',
   txt_sort: '排序',
+  txt_sort_manual: '自定义',
   txt_sort_last_edited: '最近修改',
   txt_sort_created: '最近创建',
   txt_sort_name: 'A-Z',
@@ -1455,6 +1493,48 @@ zhCNOverrides.txt_lock = '锁定';
 zhCNOverrides.txt_menu = '菜单';
 zhCNOverrides.txt_settings = '设置';
 zhCNOverrides.txt_back = '返回';
+messages.en.txt_auto_lock = 'Auto-lock';
+messages.en.txt_auto_lock_description = 'Locks after inactivity. Closing and reopening the page always starts locked.';
+messages.en.txt_auto_lock_updated = 'Auto-lock updated';
+messages.en.txt_session_timeout = 'Session timeout';
+messages.en.txt_session_timeout_updated = 'Session timeout updated';
+messages.en.txt_timeout_time = 'Timeout time';
+messages.en.txt_timeout_action = 'Timeout action';
+messages.en.txt_timeout_action_logout = 'Log out';
+messages.en.txt_timeout_action_lock = 'Lock';
+messages.en.txt_in_planning = 'In planning';
+messages.en.txt_security_preferences = 'Security Preferences';
+messages.en.txt_timeout_1_minute = '1 minute';
+messages.en.txt_timeout_5_minutes = '5 minutes';
+messages.en.txt_timeout_15_minutes = '15 minutes';
+messages.en.txt_timeout_30_minutes = '30 minutes';
+messages.en.txt_timeout_never = 'Never';
+messages.en.txt_lock_after_1_minute = 'After 1 minute';
+messages.en.txt_lock_after_5_minutes = 'After 5 minutes';
+messages.en.txt_lock_after_15_minutes = 'After 15 minutes';
+messages.en.txt_lock_after_30_minutes = 'After 30 minutes';
+messages.en.txt_lock_after_never = 'Never for inactivity';
+zhCNOverrides.txt_auto_lock = '会话超时';
+zhCNOverrides.txt_auto_lock_description = '页面闲置后执行会话超时动作；关闭页面或浏览器后再次打开始终进入锁定页。';
+zhCNOverrides.txt_auto_lock_updated = '会话超时已更新';
+zhCNOverrides.txt_session_timeout = '会话超时';
+zhCNOverrides.txt_session_timeout_updated = '会话超时已更新';
+zhCNOverrides.txt_timeout_time = '超时时间';
+zhCNOverrides.txt_timeout_action = '超时动作';
+zhCNOverrides.txt_timeout_action_logout = '注销';
+zhCNOverrides.txt_timeout_action_lock = '锁定';
+zhCNOverrides.txt_in_planning = '构思中';
+zhCNOverrides.txt_security_preferences = '安全偏好';
+zhCNOverrides.txt_timeout_1_minute = '1 分钟';
+zhCNOverrides.txt_timeout_5_minutes = '5 分钟';
+zhCNOverrides.txt_timeout_15_minutes = '15 分钟';
+zhCNOverrides.txt_timeout_30_minutes = '30 分钟';
+zhCNOverrides.txt_timeout_never = '从不';
+zhCNOverrides.txt_lock_after_1_minute = '闲置 1 分钟后';
+zhCNOverrides.txt_lock_after_5_minutes = '闲置 5 分钟后';
+zhCNOverrides.txt_lock_after_15_minutes = '闲置 15 分钟后';
+zhCNOverrides.txt_lock_after_30_minutes = '闲置 30 分钟后';
+zhCNOverrides.txt_lock_after_never = '不因闲置锁定';
 zhCNOverrides.txt_attachments = '附件';
 zhCNOverrides.txt_upload_attachments = '上传附件';
 zhCNOverrides.txt_new_attachments = '待上传附件';

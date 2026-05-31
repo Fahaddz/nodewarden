@@ -129,6 +129,14 @@ function optionalEncString(value: unknown): string | null {
   return isValidEncString(value) ? value.trim() : null;
 }
 
+function shouldAcceptCipherKey(value: unknown): boolean {
+  return value == null || value === '' || isValidEncString(value);
+}
+
+function normalizeCipherKeyForStorage(value: unknown): string | null {
+  return optionalEncString(value);
+}
+
 function sanitizeEncryptedObject<T extends Record<string, any>>(
   source: T | null | undefined,
   encryptedKeys: readonly string[]
@@ -161,18 +169,55 @@ export function normalizeCipherLoginForStorage(login: any): any {
   };
 }
 
-export function normalizeCipherLoginForCompatibility(login: any): any {
+export function normalizeCipherLoginForCompatibility(login: any, requiresUriChecksum: boolean = false): any {
   const normalized = normalizeCipherLoginForStorage(login);
   if (!normalized || typeof normalized !== 'object') return normalized ?? null;
   const next = sanitizeEncryptedObject(normalized, ['username', 'password', 'totp', 'uri']);
   if (!next) return null;
-  next.uris = Array.isArray(next.uris)
-    ? next.uris
-        .map((uri: any) => sanitizeEncryptedObject(uri, ['uri', 'uriChecksum']))
-        .filter((uri: any) => !!uri && (uri.uri || uri.uriChecksum || uri.match != null))
-    : null;
+  next.uris = normalizeCipherLoginUrisForCompatibility(next.uris, {
+    hasLegacyLoginUri: isValidEncString(next.uri),
+    requiresUriChecksum,
+  });
   next.fido2Credentials = normalizeFido2CredentialsForCompatibility(next.fido2Credentials);
   return next;
+}
+
+function normalizeCipherLoginUrisForCompatibility(
+  uris: any,
+  options: { hasLegacyLoginUri?: boolean; requiresUriChecksum?: boolean } = {}
+): any[] | null {
+  if (!Array.isArray(uris) || uris.length === 0) return null;
+  const out: any[] = [];
+
+  for (const uri of uris) {
+    if (!uri || typeof uri !== 'object') continue;
+    const next = sanitizeEncryptedObject(uri, ['uri', 'uriChecksum']);
+    if (!next) continue;
+
+    const hasUri = isValidEncString(next.uri);
+    const hasChecksum = isValidEncString(next.uriChecksum);
+    const hasMatch = next.match != null;
+
+    if (hasUri && hasChecksum) {
+      out.push(next);
+      continue;
+    }
+
+    if (hasUri && !hasChecksum) {
+      // Bitwarden browser clients using the SDK can fail the whole vault load
+      // when an item-key encrypted URI has no encrypted checksum. The server
+      // cannot derive the checksum, so expose the item without the bad URI.
+      if (options.requiresUriChecksum || options.hasLegacyLoginUri) continue;
+      out.push({ ...next, uri: null, uriChecksum: null });
+      continue;
+    }
+
+    if (hasChecksum || hasMatch) {
+      out.push(next);
+    }
+  }
+
+  return out.length ? out : null;
 }
 
 function hasMissingLoginUriChecksum(cipher: Cipher): boolean {
@@ -252,6 +297,14 @@ export function normalizeCipherSshKeyForCompatibility(sshKey: any): any {
     publicKey: String(sshKey.publicKey).trim(),
     keyFingerprint: normalizedFingerprint,
     fingerprint: normalizedFingerprint,
+  };
+}
+
+function normalizeCipherSecureNoteForCompatibility(secureNote: any): CipherSecureNote | null {
+  if (!secureNote || typeof secureNote !== 'object') return null;
+  const type = Number(secureNote?.type ?? secureNote?.Type ?? 0);
+  return {
+    type: Number.isFinite(type) ? type : 0,
   };
 }
 
@@ -506,7 +559,8 @@ export function cipherToResponse(
 ): CipherResponse {
   // Strip internal-only fields that must not appear in the API response
   const { userId, createdAt, updatedAt, archivedAt, deletedAt, ...passthrough } = cipher;
-  const normalizedLogin = normalizeCipherLoginForCompatibility((passthrough as any).login ?? null);
+  const responseCipherKey = optionalEncString(cipher.key);
+  const normalizedLogin = normalizeCipherLoginForCompatibility((passthrough as any).login ?? null, !!responseCipherKey);
   const normalizedCard = sanitizeEncryptedObject((passthrough as any).card ?? null, ['cardholderName', 'brand', 'number', 'expMonth', 'expYear', 'code']);
   const normalizedIdentity = sanitizeEncryptedObject((passthrough as any).identity ?? null, [
     'title',
@@ -529,6 +583,9 @@ export function cipherToResponse(
     'licenseNumber',
   ]);
   const normalizedSshKey = normalizeCipherSshKeyForCompatibility((passthrough as any).sshKey ?? null);
+  const normalizedSecureNote = Number(cipher.type) === 2
+    ? normalizeCipherSecureNoteForCompatibility((passthrough as any).secureNote ?? null) ?? { type: 0 }
+    : null;
   const responseAttachments = applyCipherEmbeddedAttachmentMetadata(cipher, attachments);
 
   return {
@@ -557,10 +614,11 @@ export function cipherToResponse(
     login: normalizedLogin,
     card: normalizedCard,
     identity: normalizedIdentity,
+    secureNote: normalizedSecureNote,
     fields: normalizeCipherFieldsForCompatibility((passthrough as any).fields),
     passwordHistory: normalizePasswordHistoryForCompatibility((passthrough as any).passwordHistory),
     sshKey: normalizedSshKey,
-    key: optionalEncString(cipher.key),
+    key: responseCipherKey,
     encryptedFor: (passthrough as any).encryptedFor ?? null,
   };
 }
@@ -653,6 +711,10 @@ export async function handleCreateCipher(request: Request, env: Env, userId: str
   const createSshKey = readCipherProp<CipherSshKey | null>(cipherData, ['sshKey', 'SshKey']);
   const createPasswordHistory = readCipherProp<PasswordHistory[] | null>(cipherData, ['passwordHistory', 'PasswordHistory']);
 
+  if (createKey.present && !shouldAcceptCipherKey(createKey.value)) {
+    return errorResponse('Cipher key encryption is not supported by this server. Resync the client and try again.', 400);
+  }
+
   const now = new Date().toISOString();
   // Opaque passthrough: spread ALL client fields to preserve unknown/future ones,
   // then override only server-controlled fields.
@@ -670,7 +732,7 @@ export async function handleCreateCipher(request: Request, env: Env, userId: str
     deletedAt: null,
   };
   cipher.folderId = createFolderId.present ? normalizeOptionalId(createFolderId.value) : normalizeOptionalId(cipher.folderId);
-  cipher.key = createKey.present ? (createKey.value ?? null) : (cipher.key ?? null);
+  cipher.key = normalizeCipherKeyForStorage(createKey.present ? createKey.value : cipher.key);
   cipher.login = createLogin.present ? (createLogin.value ?? null) : (cipher.login ?? null);
   cipher.card = createCard.present ? (createCard.value ?? null) : (cipher.card ?? null);
   cipher.identity = createIdentity.present ? (createIdentity.value ?? null) : (cipher.identity ?? null);
@@ -731,6 +793,10 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
   const incomingRevisionDate = readCipherRevisionDate(cipherData);
   const hasAttachmentMigrationMetadata = hasIncomingAttachmentMetadata(cipherData);
 
+  if (incomingKey.present && !shouldAcceptCipherKey(incomingKey.value)) {
+    return errorResponse('Cipher key encryption is not supported by this server. Resync the client and try again.', 400);
+  }
+
   if (!hasAttachmentMigrationMetadata && isStaleCipherUpdate(existingCipher.updatedAt, incomingRevisionDate)) {
     return errorResponse('The client copy of this cipher is out of date. Resync the client and try again.', 400);
   }
@@ -757,7 +823,10 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
     cipher.folderId = normalizeOptionalId(incomingFolderId.value);
   }
   if (incomingKey.present) {
-    cipher.key = incomingKey.value ?? null;
+    const normalizedIncomingKey = normalizeCipherKeyForStorage(incomingKey.value);
+    cipher.key = normalizedIncomingKey || normalizeCipherKeyForStorage(existingCipher.key);
+  } else {
+    cipher.key = normalizeCipherKeyForStorage(existingCipher.key);
   }
   cipher.login = nextType === 1 ? (incomingLogin.present ? (incomingLogin.value ?? null) : (existingCipher.login ?? null)) : null;
   cipher.secureNote = nextType === 2 ? (incomingSecureNote.present ? (incomingSecureNote.value ?? null) : (existingCipher.secureNote ?? null)) : null;

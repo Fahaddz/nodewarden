@@ -191,7 +191,6 @@ export function normalizeCipherLoginForCompatibility(
   const next = sanitizeEncryptedObject(normalized, ['username', 'password', 'totp', 'uri']);
   if (!next) return null;
   next.uris = normalizeCipherLoginUrisForCompatibility(next.uris, {
-    hasLegacyLoginUri: isValidEncString(next.uri),
     requiresUriChecksum,
     preserveRepairableUris,
   });
@@ -201,7 +200,7 @@ export function normalizeCipherLoginForCompatibility(
 
 function normalizeCipherLoginUrisForCompatibility(
   uris: any,
-  options: { hasLegacyLoginUri?: boolean; requiresUriChecksum?: boolean; preserveRepairableUris?: boolean } = {}
+  options: { requiresUriChecksum?: boolean; preserveRepairableUris?: boolean } = {}
 ): any[] | null {
   if (!Array.isArray(uris) || uris.length === 0) return null;
   const out: any[] = [];
@@ -231,7 +230,7 @@ function normalizeCipherLoginUrisForCompatibility(
       // Bitwarden browser clients using the SDK drop item-key encrypted URIs
       // whose checksum is missing/invalid. User-key encrypted legacy/import
       // entries bypass this validation and can safely keep the URI.
-      if (options.requiresUriChecksum || options.hasLegacyLoginUri) continue;
+      if (options.requiresUriChecksum) continue;
       out.push({ ...next, uriChecksum: null });
       continue;
     }
@@ -824,6 +823,9 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
   const incomingPasswordHistory = readCipherProp<PasswordHistory[] | null>(cipherData, ['passwordHistory', 'PasswordHistory']);
   const incomingRevisionDate = readCipherRevisionDate(cipherData);
   const hasAttachmentMigrationMetadata = hasIncomingAttachmentMetadata(cipherData);
+  const preserveRevisionDate =
+    shouldPreserveRepairableCipherUris(request)
+    && (body.preserveRevisionDate === true || cipherData.preserveRevisionDate === true);
 
   if (incomingKey.present && !shouldAcceptCipherKey(incomingKey.value)) {
     return errorResponse('Cipher key encryption is not supported by this server. Resync the client and try again.', 400);
@@ -833,13 +835,18 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
     return errorResponse('The client copy of this cipher is out of date. Resync the client and try again.', 400);
   }
 
+  if (!shouldPreserveRepairableCipherUris(request) && incomingLogin.present && hasMissingLoginUriChecksum(existingCipher)) {
+    return errorResponse('This item has login URIs that must be repaired in NodeWarden Web before updating from this client. Open NodeWarden Web once, then resync.', 400);
+  }
+
   const nextType = Number(cipherData.type) || existingCipher.type;
 
   // Opaque passthrough: merge existing stored data with ALL incoming client fields.
   // Unknown/future fields from the client are preserved; server-controlled fields are protected.
+  const { preserveRevisionDate: _preserveRevisionDate, PreserveRevisionDate: _pascalPreserveRevisionDate, ...cipherDataWithoutFlags } = cipherData;
   const cipher: Cipher = {
     ...existingCipher,   // start with all existing stored data (including unknowns)
-    ...cipherData,       // overlay all client data (including new/unknown fields)
+    ...cipherDataWithoutFlags, // overlay all client data (including new/unknown fields)
     // Server-controlled fields (never from client)
     id: existingCipher.id,
     userId: existingCipher.userId,
@@ -847,7 +854,7 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
     favorite: cipherData.favorite ?? existingCipher.favorite,
     reprompt: cipherData.reprompt ?? existingCipher.reprompt,
     createdAt: existingCipher.createdAt,
-    updatedAt: new Date().toISOString(),
+    updatedAt: preserveRevisionDate ? existingCipher.updatedAt : new Date().toISOString(),
     archivedAt: readCipherArchivedAt(cipherData, existingCipher.archivedAt ?? null),
     deletedAt: existingCipher.deletedAt,
   };

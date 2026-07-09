@@ -51,7 +51,18 @@ jobs:
           UPSTREAM_BRANCH: ${{ github.event.inputs.upstream_branch || 'main' }}
         run: |
           git checkout -B upstream-review origin/main
-          git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"
+          if ! git merge --no-ff --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            CONFLICTS="$(git diff --name-only --diff-filter=U)"
+            if [ "$CONFLICTS" = ".github/workflows/sync-upstream.yml" ]; then
+              git checkout --ours .github/workflows/sync-upstream.yml
+              git add .github/workflows/sync-upstream.yml
+              git commit --no-edit
+            else
+              echo "Unhandled merge conflicts:"
+              echo "$CONFLICTS"
+              exit 1
+            fi
+          fi
 
       - name: Push review branch
         env:

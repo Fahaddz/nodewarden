@@ -89,9 +89,11 @@ jobs:
           SAFE_REF="$(printf '%s' "$TARGET_REF" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
           BRANCH="upstream-sync/${SAFE_REF}-${TARGET_SHA:0:12}"
 
-          echo "ref=$TARGET_REF" >> "$GITHUB_OUTPUT"
-          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          {
+            echo "ref=$TARGET_REF"
+            echo "sha=$TARGET_SHA"
+            echo "branch=$BRANCH"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check whether the release is already merged
         id: check

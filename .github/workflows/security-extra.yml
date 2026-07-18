@@ -85,18 +85,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run Semgrep CE
         id: semgrep-scan
         shell: bash
+        env:
+          BASELINE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          set -u
+          BASELINE_ARGS=()
+          if [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] && \
+             [ "$BASELINE_SHA" != "0000000000000000000000000000000000000000" ] && \
+             git cat-file -e "${BASELINE_SHA}^{commit}" 2>/dev/null; then
+            BASELINE_ARGS=(--baseline-commit "$BASELINE_SHA")
+          fi
+
           set +e
           docker run --rm \
             -v "${PWD}:/src" \
             -w /src \
             semgrep/semgrep:1.170.0 \
-            semgrep scan --config p/default --error --sarif --output semgrep.sarif .
+            semgrep scan --config p/default --error \
+              "${BASELINE_ARGS[@]}" \
+              --sarif --output semgrep.sarif .
           STATUS="$?"
           set -e
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"

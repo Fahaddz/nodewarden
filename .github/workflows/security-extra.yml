@@ -3,7 +3,10 @@ name: "Extra Security Scan"
 on:
   push:
     branches:
-      - "**"
+      - main
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -48,8 +51,8 @@ jobs:
       upload-sarif: true
       fail-on-vuln: true
 
-  pnpm-audit:
-    name: pnpm audit
+  npm-audit:
+    name: npm audit
     runs-on: ubuntu-latest
 
     permissions:
@@ -66,17 +69,9 @@ jobs:
         with:
           node-version: 22
 
-      - name: Run pnpm audit
+      - name: Run npm audit
         shell: bash
-        run: |
-          if [ ! -f pnpm-lock.yaml ]; then
-            echo "pnpm-lock.yaml not found, skip pnpm audit."
-            exit 0
-          fi
-
-          corepack enable
-          corepack prepare pnpm@10 --activate
-          pnpm audit --audit-level=high
+        run: npm audit --audit-level=high
 
   semgrep:
     name: Semgrep CE Scan
@@ -93,13 +88,18 @@ jobs:
           persist-credentials: false
 
       - name: Run Semgrep CE
+        id: semgrep-scan
         shell: bash
         run: |
+          set +e
           docker run --rm \
             -v "${PWD}:/src" \
             -w /src \
-            semgrep/semgrep:latest \
-            semgrep scan --config p/default --sarif --output semgrep.sarif . || true
+            semgrep/semgrep:1.170.0 \
+            semgrep scan --config p/default --error --sarif --output semgrep.sarif .
+          STATUS="$?"
+          set -e
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
           if [ ! -f semgrep.sarif ]; then
             cat > semgrep.sarif <<'EOF'
@@ -123,10 +123,18 @@ jobs:
           fi
 
       - name: Upload Semgrep SARIF
+        if: always()
         uses: github/codeql-action/upload-sarif@411bbbe57033eedfc1a82d68c01345aa96c737d7
         with:
           sarif_file: semgrep.sarif
           category: semgrep
+
+      - name: Enforce Semgrep result
+        if: always() && steps.semgrep-scan.outputs.status != '0'
+        shell: bash
+        run: |
+          echo "Semgrep reported a finding or scan failure."
+          exit 1
 
   actionlint:
     name: GitHub Actions Syntax Scan
@@ -144,10 +152,15 @@ jobs:
       - name: Run actionlint
         shell: bash
         run: |
-          docker run --rm \
-            -v "${PWD}:/repo" \
-            -w /repo \
-            rhysd/actionlint:latest
+          set -euo pipefail
+          VERSION="1.7.12"
+          ARCHIVE="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --output "$ARCHIVE" \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${ARCHIVE}"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $ARCHIVE" | sha256sum --check
+          tar -xzf "$ARCHIVE" actionlint
+          ./actionlint
 
   zizmor:
     name: GitHub Actions Security Scan

@@ -1,9 +1,9 @@
 name: AI PR Review
 
-on:
+on: # zizmor: ignore[dangerous-triggers] privileged job uses protected main, validates repo/branch/SHA, and never executes PR code
   workflow_run:
     workflows:
-      - Security Scan
+      - Extra Security Scan
     types:
       - completed
   workflow_dispatch:
@@ -19,7 +19,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: ai-pr-review
+  group: ai-pr-review-${{ github.event.workflow_run.head_sha || github.event.inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -27,9 +27,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           fetch-depth: 0
+          ref: main
+          persist-credentials: false
 
       - name: Resolve PR context
         id: context
@@ -44,27 +46,42 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             PR_NUMBER="$(jq -r '.workflow_run.pull_requests[0].number // empty' "$EVENT_PATH")"
             HEAD_BRANCH="$(jq -r '.workflow_run.head_branch // empty' "$EVENT_PATH")"
+            SECURITY_HEAD_SHA="$(jq -r '.workflow_run.head_sha // empty' "$EVENT_PATH")"
             SECURITY_RUN_ID="$(jq -r '.workflow_run.id' "$EVENT_PATH")"
             SECURITY_CONCLUSION="$(jq -r '.workflow_run.conclusion // "unknown"' "$EVENT_PATH")"
             SECURITY_URL="$(jq -r '.workflow_run.html_url // empty' "$EVENT_PATH")"
             SECURITY_NAME="$(jq -r '.workflow_run.name // "Security Scan"' "$EVENT_PATH")"
-            if [ -z "$PR_NUMBER" ] || [ "$HEAD_BRANCH" != "upstream-review" ]; then
+            if [ -z "$PR_NUMBER" ] || [[ "$HEAD_BRANCH" != upstream-sync/* ]]; then
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           else
             PR_NUMBER="$INPUT_PR_NUMBER"
+            SECURITY_HEAD_SHA=""
             SECURITY_RUN_ID=""
             SECURITY_CONCLUSION="manual"
             SECURITY_URL=""
             SECURITY_NAME="manual"
           fi
 
-          gh pr view "$PR_NUMBER" --json number,title,body,headRefName,baseRefName,url,changedFiles,commits,author,mergeable > pr.json
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > pr-api.json
+          gh pr view "$PR_NUMBER" --json number,title,body,headRefName,baseRefName,url,changedFiles,commits,author,mergeable,state > pr.json
 
-          PR_HEAD="$(jq -r '.headRefName' pr.json)"
-          PR_BASE="$(jq -r '.baseRefName' pr.json)"
-          if [ "$PR_HEAD" != "upstream-review" ] || [ "$PR_BASE" != "main" ]; then
+          PR_HEAD="$(jq -r '.head.ref' pr-api.json)"
+          PR_HEAD_SHA="$(jq -r '.head.sha' pr-api.json)"
+          PR_HEAD_REPO="$(jq -r '.head.repo.full_name' pr-api.json)"
+          PR_BASE="$(jq -r '.base.ref' pr-api.json)"
+          PR_STATE="$(jq -r '.state' pr-api.json)"
+          if [[ "$PR_HEAD" != upstream-sync/* ]] || \
+             [ "$PR_BASE" != "main" ] || \
+             [ "$PR_HEAD_REPO" != "${{ github.repository }}" ] || \
+             [ "$PR_STATE" != "open" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$SECURITY_HEAD_SHA" ] && [ "$SECURITY_HEAD_SHA" != "$PR_HEAD_SHA" ]; then
+            echo "Security result is stale for the current PR head; skipping review."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -96,12 +113,13 @@ jobs:
         if: steps.context.outputs.skip != 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-3-flash-preview
+          GEMINI_MODEL: gemini-flash-latest
           PR_METADATA_PATH: pr.json
           SECURITY_METADATA_PATH: security.json
           DIFF_PATH: pr.diff
           OUTPUT_PATH: ai-review.md
-          MAX_DIFF_CHARS: "300000"
+          MAX_DIFF_CHARS: "240000"
+          GEMINI_MAX_ATTEMPTS: "5"
         run: |
           node .github/scripts/ai-pr-review.cjs
 

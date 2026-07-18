@@ -1,0 +1,12 @@
+# Request explicit owner review for every change, including automated upstream syncs.
+* @Fahaddz
+
+# Security-sensitive areas are listed separately so future ownership rules stay obvious.
+/.github/ @Fahaddz
+/src/handlers/ @Fahaddz
+/src/services/ @Fahaddz
+/src/durable/ @Fahaddz
+/src/utils/ @Fahaddz
+/webapp/src/lib/crypto.ts @Fahaddz
+/wrangler.toml @Fahaddz
+/wrangler.kv.toml @Fahaddz

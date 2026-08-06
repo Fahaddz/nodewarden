@@ -3,6 +3,8 @@ name: AI PR Review
 on: # zizmor: ignore[dangerous-triggers] privileged job uses protected main, validates repo/branch/SHA, and never executes PR code
   workflow_run:
     workflows:
+      - CI
+      - CodeQL Advanced
       - Extra Security Scan
     types:
       - completed
@@ -46,22 +48,14 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_run" ]; then
             PR_NUMBER="$(jq -r '.workflow_run.pull_requests[0].number // empty' "$EVENT_PATH")"
             HEAD_BRANCH="$(jq -r '.workflow_run.head_branch // empty' "$EVENT_PATH")"
-            SECURITY_HEAD_SHA="$(jq -r '.workflow_run.head_sha // empty' "$EVENT_PATH")"
-            SECURITY_RUN_ID="$(jq -r '.workflow_run.id' "$EVENT_PATH")"
-            SECURITY_CONCLUSION="$(jq -r '.workflow_run.conclusion // "unknown"' "$EVENT_PATH")"
-            SECURITY_URL="$(jq -r '.workflow_run.html_url // empty' "$EVENT_PATH")"
-            SECURITY_NAME="$(jq -r '.workflow_run.name // "Security Scan"' "$EVENT_PATH")"
+            TRIGGER_HEAD_SHA="$(jq -r '.workflow_run.head_sha // empty' "$EVENT_PATH")"
             if [ -z "$PR_NUMBER" ] || [[ "$HEAD_BRANCH" != upstream-sync/* ]]; then
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           else
             PR_NUMBER="$INPUT_PR_NUMBER"
-            SECURITY_HEAD_SHA=""
-            SECURITY_RUN_ID=""
-            SECURITY_CONCLUSION="manual"
-            SECURITY_URL=""
-            SECURITY_NAME="manual"
+            TRIGGER_HEAD_SHA=""
           fi
 
           gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > pr-api.json
@@ -80,31 +74,34 @@ jobs:
             exit 0
           fi
 
-          if [ -n "$SECURITY_HEAD_SHA" ] && [ "$SECURITY_HEAD_SHA" != "$PR_HEAD_SHA" ]; then
-            echo "Security result is stale for the current PR head; skipping review."
+          if [ -n "$TRIGGER_HEAD_SHA" ] && [ "$TRIGGER_HEAD_SHA" != "$PR_HEAD_SHA" ]; then
+            echo "Triggering check is stale for the current PR head; skipping review."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          if [ -n "$SECURITY_RUN_ID" ]; then
-            gh api "repos/${{ github.repository }}/actions/runs/$SECURITY_RUN_ID/jobs?per_page=100" > security-jobs.json
-          else
-            printf '{"jobs":[]}\n' > security-jobs.json
-          fi
-
-          jq -n \
-            --arg conclusion "$SECURITY_CONCLUSION" \
-            --arg url "$SECURITY_URL" \
-            --arg name "$SECURITY_NAME" \
-            --argjson jobs "$(cat security-jobs.json)" \
-            '{
-              workflowName: $name,
-              conclusion: $conclusion,
-              url: $url,
-              jobs: ($jobs.jobs // [])
-            }' > security.json
+          gh api "repos/${{ github.repository }}/actions/runs?head_sha=$PR_HEAD_SHA&per_page=100" > workflow-runs.json
+          jq '
+            ["CI", "CodeQL Advanced", "Extra Security Scan"] as $required |
+            [
+              $required[] as $name |
+              ([.workflow_runs[] | select(.name == $name)] | sort_by(.created_at) | reverse | .[0]) as $run |
+              {
+                name: $name,
+                status: ($run.status // "missing"),
+                conclusion: ($run.conclusion // "missing"),
+                url: ($run.html_url // null)
+              }
+            ] as $workflows |
+            {
+              requiredWorkflows: $workflows,
+              allPassed: ($workflows | all(.status == "completed" and .conclusion == "success"))
+            }
+          ' workflow-runs.json > security.json
 
           gh pr diff "$PR_NUMBER" --patch > pr.diff
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/files?per_page=100" --paginate --slurp |
+            jq 'add // []' > pr-files.json
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
@@ -112,14 +109,16 @@ jobs:
       - name: Generate AI review
         if: steps.context.outputs.skip != 'true'
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_MODEL: gemini-flash-latest
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.AI_REVIEW_MODEL }}
           PR_METADATA_PATH: pr.json
           SECURITY_METADATA_PATH: security.json
+          PR_FILES_PATH: pr-files.json
           DIFF_PATH: pr.diff
           OUTPUT_PATH: ai-review.md
+          DECISION_PATH: ai-decision.json
           MAX_DIFF_CHARS: "240000"
-          GEMINI_MAX_ATTEMPTS: "5"
+          DEEPSEEK_MAX_ATTEMPTS: "5"
         run: |
           node .github/scripts/ai-pr-review.cjs
 
@@ -141,3 +140,44 @@ jobs:
           else
             gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --method POST --input comment.json > /dev/null
           fi
+
+      - name: Apply risk label and guarded review decision
+        if: steps.context.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+        run: |
+          set -euo pipefail
+
+          RISK_LEVEL="$(jq -r '.effectiveRiskLevel' ai-decision.json)"
+          REVIEW_EVENT="$(jq -r '.reviewEvent' ai-decision.json)"
+          RISK_SCORE="$(jq -r '.riskScore' ai-decision.json)"
+
+          gh label create "ai-risk: low" --color "2DA44E" --description "AI risk score: low" --force
+          gh label create "ai-risk: medium" --color "BF8700" --description "AI risk score: medium or sensitive paths need review" --force
+          gh label create "ai-risk: high" --color "CF222E" --description "AI risk score: high or checks failed" --force
+
+          for label in "ai-risk: low" "ai-risk: medium" "ai-risk: high"; do
+            gh issue edit "$PR_NUMBER" --remove-label "$label" > /dev/null 2>&1 || true
+          done
+          gh issue edit "$PR_NUMBER" --add-label "ai-risk: $RISK_LEVEL"
+
+          case "$REVIEW_EVENT" in
+            APPROVE)
+              BODY="Guarded AI approval: risk score $RISK_SCORE/100. All required workflows passed, the diff was complete, and no sensitive deterministic rule matched. This is not an auto-merge."
+              ;;
+            REQUEST_CHANGES)
+              BODY="Guarded AI review: risk score $RISK_SCORE/100. Do not merge until the AI findings and failed or sensitive checks are manually resolved."
+              ;;
+            COMMENT)
+              echo "No formal approval: this PR needs manual review."
+              exit 0
+              ;;
+            *)
+              echo "Invalid review event: $REVIEW_EVENT"
+              exit 1
+              ;;
+          esac
+
+          jq -n --arg body "$BODY" --arg event "$REVIEW_EVENT" '{body: $body, event: $event}' > review.json
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --method POST --input review.json > /dev/null

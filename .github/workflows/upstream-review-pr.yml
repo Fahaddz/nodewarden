@@ -1,4 +1,4 @@
-name: Upstream Release PR
+name: Upstream Main PR
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_ref:
-        description: Upstream release tag or full commit SHA (blank = latest release)
+        description: Upstream release tag or full commit SHA (blank = upstream/main)
         required: false
         type: string
 
@@ -15,7 +15,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: upstream-release-pr
+  group: upstream-main-pr
   cancel-in-progress: true
 
 jobs:
@@ -40,14 +40,14 @@ jobs:
         run: |
           test -n "$PUSH_TOKEN" || { echo "Missing secret: PR_BOT_TOKEN"; exit 1; }
 
-      - name: Fetch upstream releases
+      - name: Fetch upstream main and releases
         run: |
           git remote add upstream https://github.com/shuaiplus/NodeWarden.git
           git fetch --force upstream \
             "+refs/heads/main:refs/remotes/upstream/main" \
             "+refs/tags/*:refs/tags/*"
 
-      - name: Resolve upstream release
+      - name: Resolve upstream target
         id: target
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,7 +57,8 @@ jobs:
 
           TARGET_REF="$REQUESTED_REF"
           if [ -z "$TARGET_REF" ]; then
-            TARGET_REF="$(gh api repos/shuaiplus/NodeWarden/releases/latest --jq .tag_name)"
+            TARGET_REF="main"
+            TARGET_SHA="$(git rev-parse --verify refs/remotes/upstream/main)"
           fi
 
           case "$TARGET_REF" in
@@ -67,13 +68,15 @@ jobs:
               ;;
           esac
 
-          if [[ "$TARGET_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            TARGET_SHA="$(git rev-parse --verify "${TARGET_REF}^{commit}" 2>/dev/null || true)"
-          elif git show-ref --verify --quiet "refs/tags/$TARGET_REF"; then
-            TARGET_SHA="$(git rev-parse --verify "refs/tags/${TARGET_REF}^{commit}" 2>/dev/null || true)"
-          else
-            echo "Manual refs must be an upstream release tag or a full commit SHA."
-            exit 1
+          if [ "$TARGET_REF" != "main" ]; then
+            if [[ "$TARGET_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              TARGET_SHA="$(git rev-parse --verify "${TARGET_REF}^{commit}" 2>/dev/null || true)"
+            elif git show-ref --verify --quiet "refs/tags/$TARGET_REF"; then
+              TARGET_SHA="$(git rev-parse --verify "refs/tags/${TARGET_REF}^{commit}" 2>/dev/null || true)"
+            else
+              echo "Manual refs must be an upstream release tag or a full commit SHA."
+              exit 1
+            fi
           fi
 
           if [ -z "$TARGET_SHA" ]; then
@@ -86,8 +89,12 @@ jobs:
             exit 1
           fi
 
-          SAFE_REF="$(printf '%s' "$TARGET_REF" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
-          BRANCH="upstream-sync/${SAFE_REF}-${TARGET_SHA:0:12}"
+          if [ "$TARGET_REF" = "main" ]; then
+            BRANCH="upstream-sync/main"
+          else
+            SAFE_REF="$(printf '%s' "$TARGET_REF" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
+            BRANCH="upstream-sync/${SAFE_REF}-${TARGET_SHA:0:12}"
+          fi
 
           {
             echo "ref=$TARGET_REF"
@@ -95,19 +102,19 @@ jobs:
             echo "branch=$BRANCH"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check whether the release is already merged
+      - name: Check whether the target is already merged
         id: check
         env:
           TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           if git merge-base --is-ancestor "$TARGET_SHA" origin/main; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "Upstream release is already contained in main."
+            echo "The selected upstream target is already contained in main."
           else
             echo "needed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Merge release into review branch
+      - name: Merge upstream into review branch
         if: steps.check.outputs.needed == 'true'
         id: merge
         env:
@@ -118,13 +125,33 @@ jobs:
           git checkout -B "$REVIEW_BRANCH" origin/main
 
           if git merge --no-ff --no-edit "$TARGET_SHA"; then
-            echo "conflicted=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            # Automation is owned by this fork. Never let untrusted upstream
+            # commits alter workflows or scripts on a same-repository PR branch.
+            git restore --source=origin/main --staged --worktree -- .github
+            git commit --amend --no-edit
+          else
+            git diff --name-only --diff-filter=U > all-conflicts.txt
+            grep -v '^\.github/' all-conflicts.txt > conflicts.txt || true
+
+            if [ -s conflicts.txt ]; then
+              git merge --abort
+              echo "conflicted=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # Conflicts only inside .github are resolved deterministically by
+            # retaining the fork's trusted copy. AI never chooses this result.
+            git restore --source=origin/main --staged --worktree -- .github
+            git add -A .github
+            git commit --no-edit
           fi
 
-          git diff --name-only --diff-filter=U | tee conflicts.txt
-          git merge --abort
-          echo "conflicted=true" >> "$GITHUB_OUTPUT"
+          if ! git diff --quiet origin/main -- .github; then
+            echo "Fork-owned .github files changed unexpectedly; refusing to push."
+            exit 1
+          fi
+
+          echo "conflicted=false" >> "$GITHUB_OUTPUT"
 
       - name: Report conflicts without changing code
         if: steps.merge.outputs.conflicted == 'true'
@@ -138,7 +165,7 @@ jobs:
           TITLE="Manual upstream conflict resolution required: $TARGET_REF"
           BODY_FILE="$(mktemp)"
           {
-            echo "The upstream release could not be merged automatically. No code was pushed and no conflict was auto-resolved."
+            echo "The upstream target could not be merged automatically. No code was pushed and no conflict was auto-resolved."
             echo
             echo "Upstream ref: \`$TARGET_REF\`"
             echo "Upstream commit: \`$TARGET_SHA\`"
@@ -182,22 +209,25 @@ jobs:
           set -euo pipefail
           BODY_FILE="$(mktemp)"
           {
-            echo "Upstream release sync for human review."
+            echo "Rolling upstream-main sync for review. This PR is updated whenever upstream/main advances."
             echo
             echo "- Upstream ref: \`$TARGET_REF\`"
             echo "- Upstream commit: \`$TARGET_SHA\`"
+            echo "- Fork-owned \`.github/\` automation is intentionally preserved and is not imported from upstream."
             echo
             echo "Before merging:"
             echo "- Wait for build and security checks."
-            echo "- Read the automated AI review, but do not treat it as approval."
-            echo "- Manually inspect auth, crypto, backup, import/export, workflows, and deployment changes."
+            echo "- Use the AI risk score as triage, not a guarantee."
+            echo "- A bot approval is allowed only after deterministic checks and only for low-risk, non-sensitive changes."
+            echo "- Manually inspect auth, crypto, backup, import/export, dependencies, workflows, and deployment changes."
             echo "- Never merge while a required check is failing."
+            echo "- This workflow never auto-merges or deploys the PR."
           } > "$BODY_FILE"
 
           EXISTING="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:$REVIEW_BRANCH&base=main" --jq '.[0].number // empty')"
           if [ -n "$EXISTING" ]; then
             jq -n \
-              --arg title "Review upstream NodeWarden $TARGET_REF" \
+              --arg title "Review upstream NodeWarden $TARGET_REF @ ${TARGET_SHA:0:12}" \
               --arg body "$(cat "$BODY_FILE")" \
               '{title: $title, body: $body}' > pr-update.json
             gh api "repos/$REPO/pulls/$EXISTING" --method PATCH --input pr-update.json > /dev/null
@@ -206,7 +236,7 @@ jobs:
 
           for attempt in 1 2 3 4 5; do
             jq -n \
-              --arg title "Review upstream NodeWarden $TARGET_REF" \
+              --arg title "Review upstream NodeWarden $TARGET_REF @ ${TARGET_SHA:0:12}" \
               --arg head "$OWNER:$REVIEW_BRANCH" \
               --arg base "main" \
               --arg body "$(cat "$BODY_FILE")" \
@@ -223,7 +253,7 @@ jobs:
           echo "Failed to create PR after retries."
           exit 1
 
-      - name: No pending upstream release
+      - name: No pending upstream changes
         if: steps.check.outputs.needed != 'true'
         run: |
-          echo "The selected upstream release is already present in main."
+          echo "The selected upstream target is already present in main."

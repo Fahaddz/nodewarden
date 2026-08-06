@@ -15,7 +15,7 @@ on: # zizmor: ignore[dangerous-triggers] privileged job uses protected main, val
         required: true
 
 permissions:
-  contents: read
+  contents: write
   actions: read
   pull-requests: write
   issues: write
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           ref: main
@@ -105,12 +105,14 @@ jobs:
 
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Generate AI review
         if: steps.context.outputs.skip != 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MODEL: ${{ vars.AI_REVIEW_MODEL }}
+          AUTO_MERGE_MAX_RISK: ${{ vars.AI_AUTO_MERGE_MAX_RISK }}
           PR_METADATA_PATH: pr.json
           SECURITY_METADATA_PATH: security.json
           PR_FILES_PATH: pr-files.json
@@ -164,7 +166,7 @@ jobs:
 
           case "$REVIEW_EVENT" in
             APPROVE)
-              BODY="Guarded AI approval: risk score $RISK_SCORE/100. All required workflows passed, the diff was complete, and no sensitive deterministic rule matched. This is not an auto-merge."
+              BODY="Guarded AI approval: risk score $RISK_SCORE/100 is within the configured threshold. All required workflows passed, the diff was complete, DeepSeek explicitly recommended approval, and no sensitive deterministic rule matched. This PR will now be auto-merged."
               ;;
             REQUEST_CHANGES)
               BODY="Guarded AI review: risk score $RISK_SCORE/100. Do not merge until the AI findings and failed or sensitive checks are manually resolved."
@@ -181,3 +183,53 @@ jobs:
 
           jq -n --arg body "$BODY" --arg event "$REVIEW_EVENT" '{body: $body, event: $event}' > review.json
           gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" --method POST --input review.json > /dev/null
+
+      - name: Guarded auto-merge
+        if: steps.context.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          REVIEWED_HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$(jq -r '.autoMergeEligible' ai-decision.json)" != "true" ]; then
+            echo "Risk policy did not authorize auto-merge."
+            exit 0
+          fi
+
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" > merge-pr.json
+          CURRENT_HEAD_SHA="$(jq -r '.head.sha' merge-pr.json)"
+          CURRENT_HEAD_REPO="$(jq -r '.head.repo.full_name' merge-pr.json)"
+          CURRENT_HEAD_BRANCH="$(jq -r '.head.ref' merge-pr.json)"
+          CURRENT_BASE="$(jq -r '.base.ref' merge-pr.json)"
+          CURRENT_STATE="$(jq -r '.state' merge-pr.json)"
+
+          if [ "$CURRENT_HEAD_SHA" != "$REVIEWED_HEAD_SHA" ] || \
+             [ "$CURRENT_HEAD_REPO" != "${{ github.repository }}" ] || \
+             [[ "$CURRENT_HEAD_BRANCH" != upstream-sync/* ]] || \
+             [ "$CURRENT_BASE" != "main" ] || \
+             [ "$CURRENT_STATE" != "open" ]; then
+            echo "PR context changed after review; refusing to merge."
+            exit 1
+          fi
+
+          gh api "repos/${{ github.repository }}/actions/runs?head_sha=$CURRENT_HEAD_SHA&per_page=100" > merge-runs.json
+          if ! jq -e '
+            ["CI", "CodeQL Advanced", "Extra Security Scan"] as $required |
+            [
+              $required[] as $name |
+              ([.workflow_runs[] | select(.name == $name)] | sort_by(.created_at) | reverse | .[0]) as $run |
+              $run.status == "completed" and $run.conclusion == "success"
+            ] | all
+          ' merge-runs.json > /dev/null; then
+            echo "A required workflow is no longer successful; refusing to merge."
+            exit 1
+          fi
+
+          gh pr merge "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --auto \
+            --merge \
+            --match-head-commit "$CURRENT_HEAD_SHA"
+          echo "Guarded upstream PR merged or queued for GitHub auto-merge. The normal main-branch deployment begins only after GitHub completes the merge."

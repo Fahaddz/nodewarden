@@ -11,6 +11,7 @@ const PR_FILES_PATH = process.env.PR_FILES_PATH;
 const DIFF_PATH = process.env.DIFF_PATH;
 const MAX_DIFF_CHARS = Number(process.env.MAX_DIFF_CHARS || '300000');
 const MAX_ATTEMPTS = Number(process.env.DEEPSEEK_MAX_ATTEMPTS || '5');
+const AUTO_MERGE_MAX_RISK = Number(process.env.AUTO_MERGE_MAX_RISK);
 
 const SENSITIVE_PATH_RULES = [
   ['automation or deployment', /^(?:\.github\/|wrangler(?:\.[^/]+)?\.toml$|Dockerfile|compose\.ya?ml$|cloudflare|deploy)/i],
@@ -180,7 +181,7 @@ function renderReview(assessment, decision, security, diff) {
 
   return [
     '> Automated DeepSeek review of the current upstream PR head.',
-    `> Model: \`${MODEL}\` · Diff truncated: \`${diff.truncated ? 'yes' : 'no'}\` · Auto-merge: \`disabled\``,
+    `> Model: \`${MODEL}\` · Auto-merge threshold: \`${decision.autoMergeMaxRisk}/100\` · Diff truncated: \`${diff.truncated ? 'yes' : 'no'}\` · Auto-merge eligible: \`${decision.autoMergeEligible ? 'yes' : 'no'}\``,
     '',
     '## AI Summary',
     assessment.summary,
@@ -207,14 +208,17 @@ function renderReview(assessment, decision, security, diff) {
     assessment.mergeRecommendation,
     '',
     decision.autoApproveEligible
-      ? '**Guarded auto-approval criteria passed. You must still merge manually.**'
-      : '**No automatic approval. Read the findings and inspect sensitive changes before merging.**',
+      ? '**Guarded auto-merge criteria passed. This PR will be merged automatically.**'
+      : '**No automatic merge. Read the findings and inspect sensitive changes before merging.**',
   ].join('\n');
 }
 
 async function main() {
   if (!API_KEY) throw new Error('DEEPSEEK_API_KEY is not set');
   if (!MODEL) throw new Error('DEEPSEEK_MODEL is not set');
+  if (!Number.isInteger(AUTO_MERGE_MAX_RISK) || AUTO_MERGE_MAX_RISK < 0 || AUTO_MERGE_MAX_RISK > 100) {
+    throw new Error('AUTO_MERGE_MAX_RISK must be an integer from 0 to 100');
+  }
   if (!PR_METADATA_PATH || !SECURITY_METADATA_PATH || !PR_FILES_PATH || !DIFF_PATH) {
     throw new Error('Required input paths are missing');
   }
@@ -280,8 +284,7 @@ async function main() {
   const autoApproveEligible = allPassed
     && !diff.truncated
     && blockers.length === 0
-    && assessment.riskLevel === 'low'
-    && assessment.riskScore <= 25
+    && assessment.riskScore <= AUTO_MERGE_MAX_RISK
     && assessment.recommendation === 'approve';
 
   let effectiveRiskLevel = assessment.riskLevel;
@@ -294,6 +297,7 @@ async function main() {
 
   const decision = {
     riskScore: assessment.riskScore,
+    autoMergeMaxRisk: AUTO_MERGE_MAX_RISK,
     modelRiskLevel: assessment.riskLevel,
     effectiveRiskLevel,
     recommendation: assessment.recommendation,
@@ -301,6 +305,7 @@ async function main() {
     diffTruncated: diff.truncated,
     deterministicBlockers: blockers,
     autoApproveEligible,
+    autoMergeEligible: autoApproveEligible,
     reviewEvent,
     model: MODEL,
   };

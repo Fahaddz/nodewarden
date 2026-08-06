@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
           ref: main
@@ -101,6 +101,54 @@ jobs:
             echo "sha=$TARGET_SHA"
             echo "branch=$BRANCH"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Refuse unreviewed upstream automation changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          EXPECTED_TREE="$(tr -d '[:space:]' < .github/UPSTREAM_AUTOMATION_TREE)"
+          CURRENT_TREE="$(git rev-parse "$TARGET_SHA:.github" 2>/dev/null || true)"
+          if [[ ! "$EXPECTED_TREE" =~ ^[0-9a-f]{40}$ ]] || [[ ! "$CURRENT_TREE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Cannot validate the upstream .github tree."
+            exit 1
+          fi
+
+          if [ "$CURRENT_TREE" = "$EXPECTED_TREE" ]; then
+            echo "Upstream automation matches the reviewed baseline."
+            exit 0
+          fi
+
+          TITLE="Security review required: upstream automation changed"
+          BODY_FILE="$(mktemp)"
+          {
+            echo "Upstream changed its \`.github/\` directory. The application sync was stopped before creating or updating a PR."
+            echo
+            echo "- Reviewed tree: \`$EXPECTED_TREE\`"
+            echo "- Current tree: \`$CURRENT_TREE\`"
+            echo "- Upstream commit: \`$TARGET_SHA\`"
+            echo
+            echo "Nothing from upstream \`.github/\` was imported. Audit the workflow changes, selectively update this fork's stronger checks if useful, then update \`.github/UPSTREAM_AUTOMATION_TREE\` through a protected PR."
+            echo
+            echo "Changed upstream automation paths:"
+            if git cat-file -e "${EXPECTED_TREE}^{tree}" 2>/dev/null; then
+              git diff --name-status "$EXPECTED_TREE" "$CURRENT_TREE" | sed 's/^/- `/' | sed 's/$/`/'
+            else
+              git ls-tree -r --name-only "$CURRENT_TREE" | sed 's/^/- current: `/' | sed 's/$/`/'
+            fi
+          } > "$BODY_FILE"
+
+          EXISTING="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --repo "$REPO" --body-file "$BODY_FILE"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+
+          exit 1
 
       - name: Check whether the target is already merged
         id: check
@@ -221,7 +269,7 @@ jobs:
             echo "- A bot approval is allowed only after deterministic checks and only for low-risk, non-sensitive changes."
             echo "- Manually inspect auth, crypto, backup, import/export, dependencies, workflows, and deployment changes."
             echo "- Never merge while a required check is failing."
-            echo "- This workflow never auto-merges or deploys the PR."
+            echo "- A low-risk PR is auto-merged only after every required check passes; sensitive changes remain manual."
           } > "$BODY_FILE"
 
           EXISTING="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:$REVIEW_BRANCH&base=main" --jq '.[0].number // empty')"

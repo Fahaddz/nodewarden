@@ -203,8 +203,9 @@ jobs:
             if [ -s conflicts.txt ]; then
               # Dependency files are owned by this fork: both upstream and
               # this fork bump deps (fork bumps come from security-gate
-              # fixes). Keep the fork's versions deterministically so an
-              # upstream sync is never blocked by dependency drift.
+              # fixes). Keep the fork's audit-gated versions, then let npm
+              # bump any vulnerable transitive dependencies so the sync
+              # PR's security checks stay green.
               if grep -qvx 'package.json\|package-lock.json' conflicts.txt; then
                 git merge --abort
                 echo "conflicted=true" >> "$GITHUB_OUTPUT"
@@ -212,6 +213,9 @@ jobs:
               fi
               git checkout --ours -- package.json package-lock.json
               git add package.json package-lock.json
+              npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+              npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+              git add package-lock.json package.json
               git commit --no-edit
             else
               # Conflicts only inside .github are resolved deterministically

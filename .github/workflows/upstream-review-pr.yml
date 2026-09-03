@@ -203,7 +203,10 @@ jobs:
             npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
             npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
             if ! npm audit --audit-level=high > /dev/null 2>&1; then
-              if npm audit --json 2>/dev/null | grep -q 'browserslist'; then
+              # npm audit exits non-zero when vulns exist, so capture its
+              # JSON first (pipefail would otherwise mask grep's match).
+              AUDIT_JSON="$(npm audit --json 2>/dev/null || true)"
+              if printf '%s' "$AUDIT_JSON" | grep -q 'browserslist'; then
                 node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.overrides=p.overrides||{}; if(!p.overrides.browserslist){p.overrides.browserslist='4.28.8'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n'); console.log('Pinned browserslist override to 4.28.8');}"
                 npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
                 npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
@@ -234,7 +237,8 @@ jobs:
               # cannot dedupe a nested browserslist copy, so enforce the
               # override pin when the audit still reports it.
               if ! npm audit --audit-level=high > /dev/null 2>&1; then
-                if npm audit --json 2>/dev/null | grep -q 'browserslist'; then
+                AUDIT_JSON="$(npm audit --json 2>/dev/null || true)"
+                if printf '%s' "$AUDIT_JSON" | grep -q 'browserslist'; then
                   node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.overrides=p.overrides||{}; if(!p.overrides.browserslist){p.overrides.browserslist='4.28.8'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n'); console.log('Pinned browserslist override to 4.28.8');}"
                   npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
                   npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true

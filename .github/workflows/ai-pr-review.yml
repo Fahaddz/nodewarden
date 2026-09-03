@@ -22,7 +22,11 @@ permissions:
 
 concurrency:
   group: ai-pr-review-${{ github.event.workflow_run.head_sha || github.event.inputs.pr_number || github.run_id }}
-  cancel-in-progress: true
+  # Do not cancel in-progress reviews: CI, CodeQL, and Extra Security Scan
+  # each fire a workflow_run event for the same head SHA. Cancelling meant
+  # two runs were always cancelled and, when the surviving run hit a
+  # transient DeepSeek empty response, the PR got no review at all.
+  cancel-in-progress: false
 
 jobs:
   review:

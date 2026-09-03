@@ -195,6 +195,21 @@ jobs:
             # Automation is owned by this fork. Never let untrusted upstream
             # commits alter workflows or scripts on a same-repository PR branch.
             git restore --source=origin/main --staged --worktree -- .github
+            # Security auto-heal: upstream often ships vulnerable transitive
+            # deps (e.g. nested browserslist under autoprefixer). Plain
+            # `npm audit fix` is a no-op for those, which used to leave the
+            # sync PR red on the required npm-audit/OSV gates and force a
+            # manual fix. Heal here so the PR stays green automatically.
+            npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+            npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+            if ! npm audit --audit-level=high > /dev/null 2>&1; then
+              if npm audit --json 2>/dev/null | grep -q 'browserslist'; then
+                node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.overrides=p.overrides||{}; if(!p.overrides.browserslist){p.overrides.browserslist='4.28.8'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n'); console.log('Pinned browserslist override to 4.28.8');}"
+                npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+                npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+              fi
+            fi
+            git add package.json package-lock.json 2>/dev/null || true
             git commit --amend --no-edit
           else
             git diff --name-only --diff-filter=U > all-conflicts.txt
@@ -215,6 +230,16 @@ jobs:
               git add package.json package-lock.json
               npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
               npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+              # Same auto-heal as the clean-merge path: `npm audit fix` alone
+              # cannot dedupe a nested browserslist copy, so enforce the
+              # override pin when the audit still reports it.
+              if ! npm audit --audit-level=high > /dev/null 2>&1; then
+                if npm audit --json 2>/dev/null | grep -q 'browserslist'; then
+                  node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('package.json','utf8')); p.overrides=p.overrides||{}; if(!p.overrides.browserslist){p.overrides.browserslist='4.28.8'; fs.writeFileSync('package.json', JSON.stringify(p,null,2)+'\n'); console.log('Pinned browserslist override to 4.28.8');}"
+                  npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+                  npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
+                fi
+              fi
               git add package-lock.json package.json
               git commit --no-edit
             else

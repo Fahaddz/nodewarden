@@ -189,12 +189,23 @@ jobs:
           REVIEW_BRANCH: ${{ steps.target.outputs.branch }}
         run: |
           set -euo pipefail
+
+          # `.github` is entirely fork-owned. Replace it wholesale rather than
+          # using `git restore`, which refuses to resolve modify/delete
+          # conflicts such as upstream editing .github/dependabot.yml after the
+          # fork deleted it.
+          restore_fork_github() {
+            git rm -r -f -q .github > /dev/null 2>&1 || true
+            git checkout origin/main -- .github
+            git add -A .github
+          }
+
           git checkout -B "$REVIEW_BRANCH" origin/main
 
           if git merge --no-ff --no-edit "$TARGET_SHA"; then
             # Automation is owned by this fork. Never let untrusted upstream
             # commits alter workflows or scripts on a same-repository PR branch.
-            git restore --source=origin/main --staged --worktree -- .github
+            restore_fork_github
             # Security auto-heal: upstream often ships vulnerable transitive
             # deps (e.g. nested browserslist under autoprefixer). Plain
             # `npm audit fix` is a no-op for those, which used to leave the
@@ -219,17 +230,15 @@ jobs:
             grep -v '^\.github/' all-conflicts.txt > conflicts.txt || true
 
             if [ -s conflicts.txt ]; then
-              # Dependency files are owned by this fork: both upstream and
-              # this fork bump deps (fork bumps come from security-gate
-              # fixes). Keep the fork's audit-gated versions, then let npm
-              # bump any vulnerable transitive dependencies so the sync
-              # PR's security checks stay green.
+              # Dependency manifests follow upstream during a sync. The fork's
+              # old security pins are superseded by upstream's newer ones;
+              # anything still vulnerable is re-pinned by the audit heal below.
               if grep -qvx 'package.json\|package-lock.json' conflicts.txt; then
                 git merge --abort
                 echo "conflicted=true" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-              git checkout --ours -- package.json package-lock.json
+              git checkout --theirs -- package.json package-lock.json
               git add package.json package-lock.json
               npm install --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
               npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
@@ -244,14 +253,16 @@ jobs:
                   npm audit fix --package-lock-only --ignore-scripts > /dev/null 2>&1 || true
                 fi
               fi
+              # The merge also leaves .github conflicts (e.g. upstream's
+              # dependabot.yml modify/delete). Resolve them before committing.
+              restore_fork_github
               git add package-lock.json package.json
               git commit --no-edit
             else
               # Conflicts only inside .github are resolved deterministically
               # by retaining the fork's trusted copy. AI never chooses this
               # result.
-              git restore --source=origin/main --staged --worktree -- .github
-              git add -A .github
+              restore_fork_github
               git commit --no-edit
             fi
           fi

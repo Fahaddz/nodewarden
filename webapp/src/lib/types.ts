@@ -263,6 +263,7 @@ export interface Cipher {
   fields?: CipherField[] | null;
   decName?: string;
   decNotes?: string;
+  unresolved?: boolean;
 }
 
 export interface SendTextData {
@@ -320,10 +321,13 @@ export interface VaultDraftField {
   type: CustomFieldType;
   label: string;
   value: string;
+  linkedId?: number | null;
+  extra?: Record<string, unknown>;
 }
 
 export interface VaultDraft {
   id?: string;
+  revisionDate?: string;
   type: number;
   favorite: boolean;
   name: string;

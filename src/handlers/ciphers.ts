@@ -164,17 +164,16 @@ function readCipherArchivedAt(source: any, fallback: string | null = null): stri
   return archived.present ? normalizeCipherTimestamp(archived.value) : fallback;
 }
 
-function readCipherRevisionDate(source: any): string | null {
-  const revision = getAliasedProp(source, ['lastKnownRevisionDate', 'LastKnownRevisionDate']);
-  return revision.present ? normalizeCipherTimestamp(revision.value) : null;
-}
-
-function isStaleCipherUpdate(existingUpdatedAt: string, clientRevisionDate: string | null): boolean {
-  if (!clientRevisionDate) return false;
+function isStaleCipherUpdate(existingUpdatedAt: string, clientRevisionDate: unknown): boolean {
+  const normalizedRevisionDate = normalizeCipherTimestamp(clientRevisionDate);
+  if (!normalizedRevisionDate) return false;
   const existingTs = Date.parse(existingUpdatedAt);
-  const clientTs = Date.parse(clientRevisionDate);
-  if (Number.isNaN(existingTs) || Number.isNaN(clientTs)) return false;
-  return existingTs - clientTs > 1000;
+  const clientTs = Date.parse(normalizedRevisionDate);
+  // The Bitwarden SDK sends whole seconds. An explicit fractional part, including .000, keeps its precision.
+  const wholeSeconds = typeof clientRevisionDate === 'string'
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$/i.test(clientRevisionDate);
+  if (wholeSeconds) return Math.floor(existingTs / 1000) * 1000 > clientTs;
+  return existingTs > clientTs;
 }
 
 function syncCipherComputedAliases(cipher: Cipher): Cipher {
@@ -522,6 +521,7 @@ function normalizeCipherSecureNoteForCompatibility(secureNote: any): CipherSecur
   if (!secureNote || typeof secureNote !== 'object') return null;
   const type = Number(secureNote?.type ?? secureNote?.Type ?? 0);
   return {
+    ...secureNote,
     type: Number.isFinite(type) ? type : 0,
   };
 }
@@ -653,10 +653,6 @@ function readIncomingAttachmentMetadata(source: any): IncomingAttachmentMetadata
   }
 
   return [...merged.values()];
-}
-
-function hasIncomingAttachmentMetadata(source: any): boolean {
-  return readIncomingAttachmentMetadata(source).length > 0;
 }
 
 async function syncIncomingAttachmentMetadata(
@@ -1036,7 +1032,6 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
   // Handle nested cipher object
   // Android client sends PascalCase "Cipher" for organization ciphers
   const cipherData = body.Cipher || body.cipher || body;
-  const incomingFolderId = readCipherProp<string | null>(cipherData, ['folderId', 'FolderId']);
   const incomingKey = readCipherProp<string | null>(cipherData, ['key', 'Key']);
   const incomingLogin = readCipherProp<CipherLogin | null>(cipherData, ['login', 'Login']);
   const incomingCard = readCipherProp<CipherCard | null>(cipherData, ['card', 'Card']);
@@ -1047,8 +1042,7 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
   const incomingDriversLicense = readCipherProp<CipherDriversLicense | null>(cipherData, ['driversLicense', 'DriversLicense']);
   const incomingPassport = readCipherProp<CipherPassport | null>(cipherData, ['passport', 'Passport']);
   const incomingPasswordHistory = readCipherProp<PasswordHistory[] | null>(cipherData, ['passwordHistory', 'PasswordHistory']);
-  const incomingRevisionDate = readCipherRevisionDate(cipherData);
-  const hasAttachmentMigrationMetadata = hasIncomingAttachmentMetadata(cipherData);
+  const incomingRevisionDate = readCipherProp(cipherData, ['lastKnownRevisionDate', 'LastKnownRevisionDate']).value;
   const preserveRevisionDate =
     shouldPreserveRepairableCipherUris(request)
     && (body.preserveRevisionDate === true || cipherData.preserveRevisionDate === true);
@@ -1057,7 +1051,7 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
     return errorResponse('Cipher key encryption is not supported by this server. Resync the client and try again.', 400);
   }
 
-  if (!hasAttachmentMigrationMetadata && isStaleCipherUpdate(existingCipher.updatedAt, incomingRevisionDate)) {
+  if (isStaleCipherUpdate(existingCipher.updatedAt, incomingRevisionDate)) {
     return errorResponse('The client copy of this cipher is out of date. Resync the client and try again.', 400);
   }
 
@@ -1065,7 +1059,13 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
 
   // Opaque passthrough: merge existing stored data with ALL incoming client fields.
   // Unknown/future fields from the client are preserved; server-controlled fields are protected.
-  const { preserveRevisionDate: _preserveRevisionDate, PreserveRevisionDate: _pascalPreserveRevisionDate, ...cipherDataWithoutFlags } = cipherData;
+  const {
+    preserveRevisionDate: _preserveRevisionDate,
+    PreserveRevisionDate: _pascalPreserveRevisionDate,
+    lastKnownRevisionDate: _lastKnownRevisionDate,
+    LastKnownRevisionDate: _pascalLastKnownRevisionDate,
+    ...cipherDataWithoutFlags
+  } = cipherData;
   const cipher: Cipher = {
     ...existingCipher,   // start with all existing stored data (including unknowns)
     ...cipherDataWithoutFlags, // overlay all client data (including new/unknown fields)
@@ -1076,13 +1076,10 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
     favorite: cipherData.favorite ?? existingCipher.favorite,
     reprompt: cipherData.reprompt ?? existingCipher.reprompt,
     createdAt: existingCipher.createdAt,
-    updatedAt: preserveRevisionDate ? existingCipher.updatedAt : new Date().toISOString(),
+    updatedAt: preserveRevisionDate ? existingCipher.updatedAt : new Date(Math.max(Date.now(), Date.parse(existingCipher.updatedAt) + 1)).toISOString(),
     archivedAt: readCipherArchivedAt(cipherData, existingCipher.archivedAt ?? null),
     deletedAt: existingCipher.deletedAt,
   };
-  if (incomingFolderId.present) {
-    cipher.folderId = normalizeOptionalId(incomingFolderId.value);
-  }
   if (incomingKey.present) {
     const normalizedIncomingKey = normalizeCipherKeyForStorage(incomingKey.value);
     cipher.key = normalizedIncomingKey || normalizeCipherKeyForStorage(existingCipher.key);
@@ -1103,6 +1100,7 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
 
   // Nullable fields use replacement semantics on this full-update endpoint.
   // Some clients omit cleared values, so merge fallback must not resurrect them.
+  cipher.folderId = normalizeOptionalId(readNullableFullUpdateField<string>(cipherData, ['folderId', 'FolderId']));
   cipher.notes = readNullableFullUpdateField<string>(cipherData, ['notes', 'Notes']);
   cipher.fields = readNullableFullUpdateField<Cipher['fields']>(cipherData, ['fields', 'Fields']);
   normalizeCipherForStorage(cipher);
@@ -1115,8 +1113,11 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
     if (!folderOk) return errorResponse('Folder not found', 404);
   }
 
+  if (!(await storage.updateCipherIfUnchanged(cipher, existingCipher.updatedAt))) {
+    return errorResponse('The client copy of this cipher is out of date. Resync the client and try again.', 400);
+  }
+  // Rejected updates must not modify attachment metadata either.
   await syncIncomingAttachmentMetadata(storage, cipher.id, cipherData);
-  await storage.saveCipher(cipher);
   const revisionDate = await storage.updateRevisionDate(userId);
   notifyVaultSyncForRequest(request, env, userId, revisionDate);
   notifyCipherUpdateForRequest(request, env, cipher, revisionDate);
@@ -1451,7 +1452,7 @@ export async function handleBulkDeleteCiphers(request: Request, env: Env, userId
   return new Response(null, { status: 204 });
 }
 
-// POST /api/ciphers/restore - Bulk restore
+// PUT /api/ciphers/restore (POST retained for older NodeWarden clients)
 export async function handleBulkRestoreCiphers(request: Request, env: Env, userId: string): Promise<Response> {
   const storage = new StorageService(env.DB);
 
@@ -1472,7 +1473,7 @@ export async function handleBulkRestoreCiphers(request: Request, env: Env, userI
     notifyUserCiphersSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
   }
 
-  return new Response(null, { status: 204 });
+  return buildCipherListResponse(request, storage, userId, body.ids);
 }
 
 // POST /api/ciphers/delete-permanent - Bulk permanent delete
